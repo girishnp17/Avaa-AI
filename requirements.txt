@@ -1,0 +1,32 @@
+# Unified AI Tools - Combined Requirements
+# Core AI and API dependencies
+google-generativeai>=0.8.2
+google-genai>=1.36.0
+python-dotenv>=1.0.0
+
+# Web scraping and automation
+beautifulsoup4
+selenium
+webdriver-manager
+fake-useragent
+lxml
+requests>=2.31.0
+
+# Data processing
+pandas>=2.1.4
+numpy>=1.24.0
+
+# Document processing
+PyPDF2>=3.0.1
+python-docx>=1.1.0
+
+# Audio processing for voice interview
+pyaudio
+keyboard
+
+# Search APIs
+serpapi
+google-cloud-customsearch
+
+# Utilities
+pathlib

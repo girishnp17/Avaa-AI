@@ -1,0 +1,6 @@
+crewai
+beautifulsoup4
+fake-useragent
+lxml
+pandas
+requests
