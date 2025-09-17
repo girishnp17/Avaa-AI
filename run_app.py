@@ -5,18 +5,22 @@ Complete working integration of UI + AI
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import os
 import sys
 from dotenv import load_dotenv
 import threading
 import subprocess
 import time
+import uuid
+import base64
 
 # Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Add AI module paths correctly - each module in its own subdirectory
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -89,6 +93,15 @@ try:
 except Exception as e:
     print(f"❌ AVA Voice Interview error: {e}")
     OptimizedVoiceInterview = None
+
+# Import WebSocket Voice Interview Handler
+try:
+    from voice_interview_handler import WebSocketVoiceInterviewHandler
+    voice_handler = WebSocketVoiceInterviewHandler(socketio)
+    print("✅ WebSocket Voice Interview Handler loaded")
+except Exception as e:
+    print(f"❌ WebSocket Voice Interview Handler error: {e}")
+    voice_handler = None
 
 @app.route('/api/health')
 def health():
@@ -309,6 +322,224 @@ def execute_voice_interview():
         print(f"❌ Voice interview execution error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
+# ============================================================================
+# WebSocket Event Handlers for Live Voice Interview
+# ============================================================================
+
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection"""
+    print(f"✅ Client connected: {request.sid}")
+    emit('connected', {'status': 'connected', 'sid': request.sid})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    print(f"❌ Client disconnected: {request.sid}")
+
+@socketio.on('create_interview_session')
+def handle_create_session(data):
+    """Create a new voice interview session"""
+    try:
+        if voice_handler is None:
+            emit('error', {'message': 'Voice interview handler not available'})
+            return
+
+        session_id = str(uuid.uuid4())
+        job_description = data.get('jobDescription', '')
+        resume_path = data.get('resumePath', 'resume.pdf')
+
+        print(f"🎙️ Creating interview session: {session_id}")
+
+        result = voice_handler.create_session(session_id, job_description, resume_path)
+
+        if result['success']:
+            join_room(session_id)
+            emit('session_created', {
+                'session_id': session_id,
+                'resume_data': result['resume_data'],
+                'total_questions': result['total_questions'],
+                'fixed_questions': result['fixed_starter_questions']
+            })
+            print(f"✅ Session created successfully: {session_id}")
+        else:
+            emit('error', {'message': result['error']})
+            print(f"❌ Failed to create session: {result['error']}")
+
+    except Exception as e:
+        print(f"❌ Error creating session: {e}")
+        emit('error', {'message': str(e)})
+
+@socketio.on('get_next_question')
+def handle_get_question(data):
+    """Get the next interview question"""
+    try:
+        if voice_handler is None:
+            emit('error', {'message': 'Voice interview handler not available'})
+            return
+
+        session_id = data.get('session_id')
+        if not session_id:
+            emit('error', {'message': 'Session ID required'})
+            return
+
+        print(f"📝 Getting next question for session: {session_id}")
+
+        result = voice_handler.get_next_question(session_id)
+
+        if result['success']:
+            emit('next_question', result, room=session_id)
+            print(f"✅ Question {result['question_number']} sent")
+        else:
+            emit('error', {'message': result['error'], 'completed': result.get('completed', False)}, room=session_id)
+
+    except Exception as e:
+        print(f"❌ Error getting question: {e}")
+        emit('error', {'message': str(e)})
+
+@socketio.on('audio_chunk')
+def handle_audio_chunk(data):
+    """Process incoming audio chunk"""
+    try:
+        print(f"🎵 Received audio_chunk event")
+        if voice_handler is None:
+            emit('error', {'message': 'Voice interview handler not available'})
+            return
+
+        session_id = data.get('session_id')
+        audio_b64 = data.get('audio_data')
+        mime_type = data.get('mime_type', 'audio/webm')  # Default to webm if not provided
+
+        print(f"🔑 Session ID: {session_id}")
+        print(f"📊 Audio data length: {len(audio_b64) if audio_b64 else 0}")
+        print(f"🎧 MIME type: {mime_type}")
+
+        if not session_id or not audio_b64:
+            emit('error', {'message': 'Session ID and audio data required'})
+            return
+
+        # Decode audio data
+        audio_bytes = base64.b64decode(audio_b64)
+
+        # Process audio chunk with MIME type
+        print(f"🎤 Processing audio chunk...")
+        voice_handler.process_audio_chunk(session_id, audio_bytes, mime_type)
+        print(f"✅ Audio chunk processed successfully")
+
+        # Acknowledge receipt
+        emit('audio_received', {'status': 'received'}, room=session_id)
+
+    except Exception as e:
+        print(f"❌ Error processing audio chunk: {e}")
+        emit('error', {'message': str(e)})
+
+@socketio.on('finish_recording')
+def handle_finish_recording(data):
+    """Process complete audio recording"""
+    try:
+        if voice_handler is None:
+            emit('error', {'message': 'Voice interview handler not available'})
+            return
+
+        session_id = data.get('session_id')
+        if not session_id:
+            emit('error', {'message': 'Session ID required'})
+            return
+
+        print(f"🎤 Finishing recording for session: {session_id}")
+
+        result = voice_handler.finish_recording(session_id)
+
+        if result['success']:
+            emit('recording_processed', result, room=session_id)
+            print(f"✅ Recording processed for question {result['question_number']}")
+
+            # Start polling for transcription
+            emit('transcription_started', {'question_number': result['question_number']}, room=session_id)
+        else:
+            emit('error', {'message': result['error']}, room=session_id)
+
+    except Exception as e:
+        print(f"❌ Error finishing recording: {e}")
+        emit('error', {'message': str(e)})
+
+@socketio.on('get_transcription')
+def handle_get_transcription(data):
+    """Get transcription for the current answer"""
+    try:
+        if voice_handler is None:
+            emit('error', {'message': 'Voice interview handler not available'})
+            return
+
+        session_id = data.get('session_id')
+        if not session_id:
+            emit('error', {'message': 'Session ID required'})
+            return
+
+        result = voice_handler.get_transcription(session_id)
+
+        if result['success']:
+            emit('transcription_ready', result, room=session_id)
+            print(f"✅ Transcription ready for question {result['question_number']}")
+        else:
+            emit('transcription_pending', {'message': result['error']}, room=session_id)
+
+    except Exception as e:
+        print(f"❌ Error getting transcription: {e}")
+        emit('error', {'message': str(e)})
+
+@socketio.on('get_session_status')
+def handle_get_status(data):
+    """Get current session status"""
+    try:
+        if voice_handler is None:
+            emit('error', {'message': 'Voice interview handler not available'})
+            return
+
+        session_id = data.get('session_id')
+        if not session_id:
+            emit('error', {'message': 'Session ID required'})
+            return
+
+        result = voice_handler.get_session_status(session_id)
+
+        if result['success']:
+            emit('session_status', result, room=session_id)
+        else:
+            emit('error', {'message': result['error']})
+
+    except Exception as e:
+        print(f"❌ Error getting session status: {e}")
+        emit('error', {'message': str(e)})
+
+@socketio.on('end_interview')
+def handle_end_interview(data):
+    """End the interview session"""
+    try:
+        if voice_handler is None:
+            emit('error', {'message': 'Voice interview handler not available'})
+            return
+
+        session_id = data.get('session_id')
+        if not session_id:
+            emit('error', {'message': 'Session ID required'})
+            return
+
+        print(f"🏁 Ending interview session: {session_id}")
+
+        result = voice_handler.end_session(session_id)
+
+        if result['success']:
+            emit('interview_completed', result, room=session_id)
+            leave_room(session_id)
+            print(f"✅ Interview completed: {result['total_questions_asked']} questions")
+        else:
+            emit('error', {'message': result['error']})
+
+    except Exception as e:
+        print(f"❌ Error ending interview: {e}")
+        emit('error', {'message': str(e)})
+
 def start_frontend():
     """Start the React frontend"""
     time.sleep(3)  # Wait for API to start
@@ -325,5 +556,5 @@ if __name__ == '__main__':
     frontend_thread.daemon = True
     frontend_thread.start()
     
-    print("📡 Starting API server on http://localhost:8000")
-    app.run(debug=False, host='0.0.0.0', port=8000)
+    print("📡 Starting API server with WebSocket support on http://localhost:8001")
+    socketio.run(app, debug=False, host='0.0.0.0', port=8001)

@@ -12,17 +12,24 @@ import {
   DialogActions,
   Alert,
   Chip,
+  Switch,
+  FormControlLabel,
 } from '@mui/material';
 import {
   VoiceChat,
   PlayArrow,
+  Computer,
 } from '@mui/icons-material';
 import { useStartVoiceInterviewMutation, useExecuteVoiceInterviewMutation } from '../store/apiSlice';
+import { VoiceInterviewSession } from '../components/Interview/VoiceInterviewSession';
 
 export default function InterviewBot() {
   const [showVoiceDialog, setShowVoiceDialog] = useState(false);
   const [jobDescription, setJobDescription] = useState('');
   const [voiceSession, setVoiceSession] = useState<any>(null);
+  const [useLiveInterview, setUseLiveInterview] = useState(true);
+  const [showLiveInterview, setShowLiveInterview] = useState(false);
+  const [interviewReport, setInterviewReport] = useState<any>(null);
   const [startVoiceInterview, { isLoading: isStartingVoice }] = useStartVoiceInterviewMutation();
   const [executeVoiceInterview, { isLoading: isExecutingVoice }] = useExecuteVoiceInterviewMutation();
 
@@ -50,12 +57,26 @@ export default function InterviewBot() {
       const result = await executeVoiceInterview({
         sessionId: voiceSession?.session_id
       }).unwrap();
-      
+
       alert(`Voice Interview Instructions:\n\n${result.data.instructions.join('\n')}\n\n${result.data.note}`);
     } catch (error) {
       console.error('❌ Failed to execute voice interview:', error);
       alert('Failed to execute voice interview. Please try again.');
     }
+  };
+
+  const handleStartLiveInterview = () => {
+    if (!jobDescription.trim()) {
+      alert('Please enter a job description first');
+      return;
+    }
+    setShowVoiceDialog(false);
+    setShowLiveInterview(true);
+  };
+
+  const handleInterviewComplete = (report: any) => {
+    setInterviewReport(report);
+    setShowLiveInterview(false);
   };
 
   return (
@@ -80,6 +101,7 @@ export default function InterviewBot() {
             <Chip label="15 Questions" color="primary" />
             <Chip label="Voice-to-Voice" color="secondary" />
             <Chip label="Real-time Analysis" color="info" />
+            <Chip label="Browser-based" color="success" />
           </Box>
 
           <Button
@@ -111,7 +133,26 @@ export default function InterviewBot() {
               <Alert severity="info" sx={{ mb: 2 }}>
                 Requirements: Microphone, quiet environment, resume.pdf file
               </Alert>
-              
+
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={useLiveInterview}
+                    onChange={(e) => setUseLiveInterview(e.target.checked)}
+                    color="primary"
+                  />
+                }
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    {useLiveInterview ? <Computer /> : <PlayArrow />}
+                    <Typography>
+                      {useLiveInterview ? 'Live Browser Interview (Recommended)' : 'Terminal Interview'}
+                    </Typography>
+                  </Box>
+                }
+                sx={{ mb: 2 }}
+              />
+
               <TextField
                 fullWidth
                 multiline
@@ -122,11 +163,12 @@ export default function InterviewBot() {
                 onChange={(e) => setJobDescription(e.target.value)}
                 sx={{ mb: 2 }}
               />
-              
+
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 <Chip label="15 Questions" size="small" />
                 <Chip label="AI Generated" size="small" />
                 <Chip label="Voice Evaluation" size="small" />
+                {useLiveInterview && <Chip label="Real-time" size="small" color="success" />}
               </Box>
             </>
           ) : (
@@ -158,13 +200,25 @@ export default function InterviewBot() {
             Cancel
           </Button>
           {!voiceSession ? (
-            <Button
-              variant="contained"
-              onClick={handleStartVoiceInterview}
-              disabled={!jobDescription.trim() || isStartingVoice}
-            >
-              {isStartingVoice ? 'Preparing...' : 'Prepare'}
-            </Button>
+            useLiveInterview ? (
+              <Button
+                variant="contained"
+                onClick={handleStartLiveInterview}
+                disabled={!jobDescription.trim()}
+                color="success"
+                startIcon={<Computer />}
+              >
+                Start Live Interview
+              </Button>
+            ) : (
+              <Button
+                variant="contained"
+                onClick={handleStartVoiceInterview}
+                disabled={!jobDescription.trim() || isStartingVoice}
+              >
+                {isStartingVoice ? 'Preparing...' : 'Prepare'}
+              </Button>
+            )
           ) : (
             <Button
               variant="contained"
@@ -178,6 +232,27 @@ export default function InterviewBot() {
           )}
         </DialogActions>
       </Dialog>
+
+      {/* Live Interview Session */}
+      {showLiveInterview && (
+        <VoiceInterviewSession
+          jobDescription={jobDescription}
+          onComplete={handleInterviewComplete}
+        />
+      )}
+
+      {/* Interview Report Display */}
+      {interviewReport && !showLiveInterview && (
+        <Box sx={{ mt: 4 }}>
+          <Button
+            variant="outlined"
+            onClick={() => setInterviewReport(null)}
+            sx={{ mb: 2 }}
+          >
+            ← Back to Start
+          </Button>
+        </Box>
+      )}
     </Box>
   );
 }

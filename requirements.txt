@@ -4,6 +4,10 @@ google-generativeai>=0.8.2
 google-genai>=1.36.0
 python-dotenv>=1.0.0
 
+# WebSocket and real-time communication
+flask-socketio>=5.3.6
+eventlet>=0.35.2
+
 # Web scraping and automation
 beautifulsoup4
 selenium

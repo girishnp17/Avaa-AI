@@ -22,15 +22,10 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
-# Configure APIs - Use GEMINI_API_KEY from .env
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-if GEMINI_API_KEY:
-    os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
-    text_genai.configure(api_key=GEMINI_API_KEY)
-    print(f"✅ Using API key: {GEMINI_API_KEY[:20]}...")
-else:
-    print("❌ No GEMINI_API_KEY found in .env file")
-    raise ValueError("Missing GEMINI_API_KEY in .env file")
+# Configure APIs
+GEMINI_API_KEY = os.getenv('GOOGLE_API_KEY')
+os.environ["GOOGLE_API_KEY"] = GEMINI_API_KEY
+text_genai.configure(api_key=GEMINI_API_KEY)
 
 # Audio settings
 FORMAT = pyaudio.paInt16
@@ -215,6 +210,8 @@ class OptimizedVoiceInterview:
     def generate_tts_audio(self, question_text: str) -> Optional[bytes]:
         """Generate TTS audio in background thread"""
         try:
+            print(f"🎙️ Calling Gemini TTS API for: {question_text[:50]}...")
+
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash-preview-tts",
                 contents=f"Please read this interview question in a professional, clear interviewer voice: {question_text}",
@@ -229,37 +226,139 @@ class OptimizedVoiceInterview:
                     )
                 )
             )
-            
+
+            print(f"🔍 TTS Response received, checking candidates...")
+
             if response.candidates and len(response.candidates) > 0:
                 candidate = response.candidates[0]
+                print(f"✅ Found candidate, checking content...")
+
                 if candidate.content and candidate.content.parts:
+                    print(f"📦 Found {len(candidate.content.parts)} parts, checking for audio...")
+
                     for part in candidate.content.parts:
                         if hasattr(part, 'inline_data') and part.inline_data:
-                            return part.inline_data.data
+                            audio_data = part.inline_data.data
+                            print(f"🎵 Raw audio data found! Size: {len(audio_data)} bytes")
+
+                            # Convert audio to browser-compatible format (MP3)
+                            try:
+                                converted_audio = self.convert_tts_audio_for_browser(audio_data)
+                                if converted_audio:
+                                    print(f"✅ Audio converted for browser! Size: {len(converted_audio)} bytes")
+                                    return converted_audio
+                                else:
+                                    print(f"⚠️ Audio conversion failed, returning raw data")
+                                    return audio_data
+                            except Exception as e:
+                                print(f"⚠️ Audio conversion error: {e}, returning raw data")
+                                return audio_data
+
+                    print(f"⚠️ No inline_data found in parts")
+                else:
+                    print(f"⚠️ No content or parts found in candidate")
+            else:
+                print(f"⚠️ No candidates found in TTS response")
+
             return None
-                    
+
         except Exception as e:
+            print(f"❌ TTS generation error: {e}")
+            import traceback
+            print(f"🔍 TTS error trace: {traceback.format_exc()}")
             return None
-    
+
+    def convert_tts_audio_for_browser(self, audio_data: bytes) -> Optional[bytes]:
+        """Convert Gemini TTS audio to browser-compatible MP3 format"""
+        try:
+            print(f"🔄 Converting {len(audio_data)} bytes of TTS audio to MP3...")
+
+            # Create temporary files for conversion
+            with tempfile.NamedTemporaryFile(delete=False) as raw_file:
+                raw_file.write(audio_data)
+                raw_path = raw_file.name
+
+            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as mp3_file:
+                mp3_path = mp3_file.name
+
+            try:
+                # Try converting assuming it's WAV format first
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', raw_path,
+                    '-codec:a', 'mp3',
+                    '-b:a', '128k',
+                    mp3_path
+                ], check=True, capture_output=True)
+
+                # Read the converted MP3 file
+                with open(mp3_path, 'rb') as f:
+                    mp3_data = f.read()
+
+                print(f"✅ Successfully converted to MP3: {len(mp3_data)} bytes")
+                return mp3_data
+
+            except subprocess.CalledProcessError:
+                # If WAV conversion fails, try as raw PCM
+                print(f"🔄 WAV conversion failed, trying as raw PCM...")
+                subprocess.run([
+                    'ffmpeg', '-y', '-f', 's16le', '-ar', '16000', '-ac', '1', '-i', raw_path,
+                    '-codec:a', 'mp3',
+                    '-b:a', '128k',
+                    mp3_path
+                ], check=True, capture_output=True)
+
+                with open(mp3_path, 'rb') as f:
+                    mp3_data = f.read()
+
+                print(f"✅ Successfully converted PCM to MP3: {len(mp3_data)} bytes")
+                return mp3_data
+
+            finally:
+                # Clean up temporary files
+                try:
+                    os.unlink(raw_path)
+                    os.unlink(mp3_path)
+                except:
+                    pass
+
+        except Exception as e:
+            print(f"❌ Audio conversion failed: {e}")
+            return None
+
     def preload_fixed_starter_questions(self):
         """Preload the fixed first 3 questions IMMEDIATELY for zero lag"""
-        
+        print(f"🎵 Starting preload of {len(self.fixed_starter_questions)} fixed starter questions...")
+
         def load_fixed_question(question_data):
             question_text = question_data["text"]
             question_type = question_data["type"]
             order = question_data["order"]
-            
-            audio_data = self.generate_tts_audio(question_text)
-            
-            if audio_data:
-                self.audio_queue.put({
-                    "question": question_text,
-                    "audio": audio_data,
-                    "type": question_type,
-                    "source": "fixed_starter",
-                    "order": order
-                })
-            else:
+
+            print(f"🎤 Generating TTS for question #{order}: {question_text[:30]}...")
+
+            try:
+                audio_data = self.generate_tts_audio(question_text)
+
+                if audio_data:
+                    print(f"✅ TTS generated successfully for question #{order}")
+                    self.audio_queue.put({
+                        "question": question_text,
+                        "audio": audio_data,
+                        "type": question_type,
+                        "source": "fixed_starter",
+                        "order": order
+                    })
+                else:
+                    print(f"⚠️ TTS failed for question #{order}, adding without audio")
+                    self.audio_queue.put({
+                        "question": question_text,
+                        "audio": None,
+                        "type": question_type,
+                        "source": "fixed_starter",
+                        "order": order
+                    })
+            except Exception as e:
+                print(f"❌ Error generating TTS for question #{order}: {e}")
                 self.audio_queue.put({
                     "question": question_text,
                     "audio": None,
@@ -267,10 +366,13 @@ class OptimizedVoiceInterview:
                     "source": "fixed_starter",
                     "order": order
                 })
-        
-        # Generate all 3 starter questions immediately
+
+        # Generate all 3 starter questions immediately with better logging
         for question_data in self.fixed_starter_questions:
+            print(f"📋 Submitting TTS task for: {question_data['text'][:30]}...")
             self.tts_executor.submit(load_fixed_question, question_data)
+
+        print(f"🚀 All {len(self.fixed_starter_questions)} TTS tasks submitted to executor")
     
     def generate_next_question_async(self):
         """Generate dynamic questions 4-15 with enhanced diversity"""
@@ -449,32 +551,73 @@ class OptimizedVoiceInterview:
         
         return b''.join(frames)
     
-    def transcribe_in_background(self, audio_data: bytes, question_number: int, question_text: str):
-        """Submit transcription to background thread"""
+    def transcribe_in_background(self, audio_data: bytes, question_number: int, question_text: str, mime_type: str = 'audio/wav'):
+        """Submit transcription to background thread with WebM to WAV conversion support"""
         def transcribe_worker():
             try:
-                # Save audio to temporary file
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
-                    temp_path = temp_file.name
-                    
-                    with wave.open(temp_path, 'wb') as wav_file:
+                print(f"🎵 Starting transcription for question {question_number}")
+                print(f"🎧 Audio data size: {len(audio_data)} bytes")
+                print(f"📝 MIME type: {mime_type}")
+
+                # Create temporary file for audio processing
+                with tempfile.NamedTemporaryFile(delete=False) as temp_input_file:
+                    temp_input_path = temp_input_file.name
+                    temp_input_file.write(audio_data)
+
+                # Create final WAV file for Gemini
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav_file:
+                    temp_wav_path = temp_wav_file.name
+
+                # Convert WebM/other formats to WAV using ffmpeg if needed
+                if mime_type in ['audio/webm', 'audio/mp4', 'audio/ogg']:
+                    print(f"🔄 Converting {mime_type} to WAV using ffmpeg...")
+                    try:
+                        # Use ffmpeg to convert to WAV with specific format for Gemini
+                        subprocess.run([
+                            'ffmpeg', '-y', '-i', temp_input_path,
+                            '-ar', '16000',  # 16kHz sample rate
+                            '-ac', '1',      # Mono
+                            '-c:a', 'pcm_s16le',  # 16-bit PCM
+                            temp_wav_path
+                        ], check=True, capture_output=True)
+                        print(f"✅ Successfully converted to WAV")
+                    except subprocess.CalledProcessError as e:
+                        print(f"❌ ffmpeg conversion failed: {e}")
+                        raise Exception(f"Audio conversion failed: {e}")
+                    except FileNotFoundError:
+                        print(f"❌ ffmpeg not found, trying direct processing...")
+                        # Fallback: try to use the raw data as WAV (may not work)
+                        with wave.open(temp_wav_path, 'wb') as wav_file:
+                            wav_file.setnchannels(1)
+                            wav_file.setsampwidth(2)
+                            wav_file.setframerate(16000)
+                            wav_file.writeframes(audio_data)
+                else:
+                    print(f"🎵 Processing as WAV directly...")
+                    # Assume it's already WAV or compatible
+                    with wave.open(temp_wav_path, 'wb') as wav_file:
                         wav_file.setnchannels(1)
                         wav_file.setsampwidth(2)
                         wav_file.setframerate(RATE)
                         wav_file.writeframes(audio_data)
-                
-                # Upload and transcribe
-                uploaded_file = text_genai.upload_file(temp_path)
+
+                print(f"📤 Uploading audio file to Gemini...")
+                # Upload and transcribe using Gemini (original CLI approach)
+                uploaded_file = text_genai.upload_file(temp_wav_path)
+                print(f"✅ File uploaded successfully")
+
+                print(f"🤖 Requesting transcription from Gemini...")
                 response = self.text_model.generate_content([
                     uploaded_file,
                     "Please transcribe the audio exactly as spoken. Only provide the transcription text, nothing else."
                 ])
-                
+
                 transcription = response.text.strip()
-                
+                print(f"✅ Transcription received: {transcription[:50]}...")
+
                 # Update covered topics tracking
                 self.update_covered_topics(question_text, transcription)
-                
+
                 # Add to transcription queue
                 self.transcription_queue.put({
                     "question_number": question_number,
@@ -482,18 +625,34 @@ class OptimizedVoiceInterview:
                     "answer": transcription,
                     "timestamp": datetime.now().isoformat()
                 })
-                
-                # Clean up
-                os.unlink(temp_path)
-                
+
+                print(f"✅ Transcription completed for question {question_number}")
+
+                # Clean up temporary files
+                os.unlink(temp_input_path)
+                os.unlink(temp_wav_path)
+
             except Exception as e:
+                print(f"❌ Transcription error for question {question_number}: {e}")
+                import traceback
+                print(f"🔍 Full error trace: {traceback.format_exc()}")
+
                 self.transcription_queue.put({
                     "question_number": question_number,
                     "question": question_text,
                     "answer": f"[Transcription failed: {e}]",
                     "timestamp": datetime.now().isoformat()
                 })
-        
+
+                # Clean up on error
+                try:
+                    if 'temp_input_path' in locals():
+                        os.unlink(temp_input_path)
+                    if 'temp_wav_path' in locals():
+                        os.unlink(temp_wav_path)
+                except:
+                    pass
+
         # Submit to transcription executor
         self.transcribe_executor.submit(transcribe_worker)
     
